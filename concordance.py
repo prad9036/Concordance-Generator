@@ -298,6 +298,34 @@ def normalize_word(word):
         "-'"
     )
 
+    # Merge common inflections so, for example, answer/answers and
+    # additive/additives share one concordance entry.
+    if len(word) > 4 and word.endswith("ies"):
+        word = word[:-3] + "y"
+    elif len(word) > 4 and word.endswith("es") and word[:-2].endswith(
+        ("s", "x", "z", "ch", "sh")
+    ):
+        word = word[:-2]
+    elif len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        word = word[:-1]
+
+    ing_exceptions = {
+        "being": "be", "doing": "do", "going": "go", "seeing": "see",
+        "using": "use", "tying": "tie", "lying": "lie", "dying": "die",
+    }
+    if word in ing_exceptions:
+        word = ing_exceptions[word]
+    elif len(word) > 5 and word.endswith("ing"):
+        word = word[:-3]
+
+        # running -> run, stopping -> stop
+        if len(word) > 2 and word[-1] == word[-2] and word[-1] not in "aeiou":
+            word = word[:-1]
+
+        # Restore the silent e dropped by common verbs: making -> make.
+        if word.endswith(("mak", "tak", "writ", "driv", "giv", "hav", "us", "clos", "danc", "bik", "nam", "sav", "smil", "mov", "lov")):
+            word += "e"
+
 
     return word
 
