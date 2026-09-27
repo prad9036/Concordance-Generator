@@ -401,71 +401,21 @@ def build_concordance(pages):
 # FORMAT PAGE NUMBERS
 # ============================================================
 
-def format_page_ranges(pages):
+def format_page_numbers(pages):
 
     if not pages:
         return ""
 
-    ranges = []
-    numeric_pages = sorted({int(value) for value in pages if str(value).isdigit()})
-    dotted_pages = sorted({
-        (int(str(value).split(".")[0]), int(str(value).split(".")[1]))
-        for value in pages
-        if re.fullmatch(r"\d+\.\d+", str(value))
-    })
-    other_pages = sorted({
-        str(value)
-        for value in pages
-        if not str(value).isdigit() and not re.fullmatch(r"\d+\.\d+", str(value))
-    })
+    def page_sort_key(value):
+        value = str(value)
+        if value.isdigit():
+            return (0, int(value), 0, "")
+        dotted = re.fullmatch(r"(\d+)\.(\d+)", value)
+        if dotted:
+            return (1, int(dotted.group(1)), int(dotted.group(2)), "")
+        return (2, 0, 0, value)
 
-    if numeric_pages:
-        start = previous = numeric_pages[0]
-
-        for page in numeric_pages[1:]:
-            if page == previous + 1:
-                previous = page
-                continue
-
-            if start == previous:
-                ranges.append(str(start))
-            elif previous == start + 1:
-                ranges.append(f"{start}, {previous}")
-            else:
-                ranges.append(f"{start}–{previous}")
-            start = previous = page
-
-        if start == previous:
-            ranges.append(str(start))
-        elif previous == start + 1:
-            ranges.append(f"{start}, {previous}")
-        else:
-            ranges.append(f"{start}–{previous}")
-
-    if dotted_pages:
-        start = previous = dotted_pages[0]
-        for page in dotted_pages[1:]:
-            if page[0] == previous[0] and page[1] == previous[1] + 1:
-                previous = page
-                continue
-
-            if start == previous:
-                ranges.append(f"{start[0]}.{start[1]}")
-            elif start[0] == previous[0]:
-                ranges.append(f"{start[0]}.{start[1]}–{previous[0]}.{previous[1]}")
-            else:
-                ranges.append(f"{start[0]}.{start[1]}, {previous[0]}.{previous[1]}")
-            start = previous = page
-
-        if start == previous:
-            ranges.append(f"{start[0]}.{start[1]}")
-        elif start[0] == previous[0]:
-            ranges.append(f"{start[0]}.{start[1]}–{previous[0]}.{previous[1]}")
-        else:
-            ranges.append(f"{start[0]}.{start[1]}, {previous[0]}.{previous[1]}")
-
-    ranges.extend(other_pages)
-    return ", ".join(ranges)
+    return ", ".join(sorted({str(value) for value in pages}, key=page_sort_key))
 
 
 # ============================================================
@@ -734,7 +684,7 @@ def create_docx(
 
 
         page_numbers = (
-            format_page_ranges(
+            format_page_numbers(
                 concordance[word]
             )
         )
