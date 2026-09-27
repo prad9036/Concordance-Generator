@@ -3,6 +3,8 @@ import sys
 from collections import defaultdict, Counter
 
 import fitz  # PyMuPDF
+import nltk
+from nltk.stem import WordNetLemmatizer
 
 from docx import Document
 from docx.shared import Inches, Pt
@@ -19,6 +21,9 @@ MIN_WORD_LENGTH = 3
 
 FONT_NAME = "Times New Roman"
 FONT_SIZE = 9
+
+LEMMATIZER = WordNetLemmatizer()
+LEMMATIZATION_WARNING_SHOWN = False
 
 TOP_MARGIN = 0.55
 BOTTOM_MARGIN = 0.55
@@ -298,36 +303,69 @@ def normalize_word(word):
         "-'"
     )
 
-    # Merge common inflections so, for example, answer/answers and
-    # additive/additives share one concordance entry.
-    if len(word) > 4 and word.endswith("ies"):
-        word = word[:-3] + "y"
-    elif len(word) > 4 and word.endswith("es") and word[:-2].endswith(
-        ("s", "x", "z", "ch", "sh")
-    ):
-        word = word[:-2]
-    elif len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
-        word = word[:-1]
-
-    ing_exceptions = {
-        "being": "be", "doing": "do", "going": "go", "seeing": "see",
-        "using": "use", "tying": "tie", "lying": "lie", "dying": "die",
-    }
-    if word in ing_exceptions:
-        word = ing_exceptions[word]
-    elif len(word) > 5 and word.endswith("ing"):
-        word = word[:-3]
-
-        # running -> run, stopping -> stop
-        if len(word) > 2 and word[-1] == word[-2] and word[-1] not in "aeiou":
-            word = word[:-1]
-
-        # Restore the silent e dropped by common verbs: making -> make.
-        if word.endswith(("mak", "tak", "writ", "driv", "giv", "hav", "us", "clos", "danc", "bik", "nam", "sav", "smil", "mov", "lov")):
-            word += "e"
-
+    # Canonicalize this regular British/American spelling difference.
+    if word.endswith("isation"):
+        word = word[:-7] + "ization"
 
     return word
+
+
+def lemmatize_words(words):
+    """Lemmatize known English inflections; leave unknown words untouched."""
+    global LEMMATIZATION_WARNING_SHOWN
+
+    words = [normalize_word(word) for word in words]
+
+    try:
+        tagged_words = nltk.pos_tag(words)
+        lemmas = []
+
+        for word, tag in tagged_words:
+            pos = tag[0]
+            wordnet_pos = {
+                "J": "a",
+                "N": "n",
+                "R": "r",
+                "V": "v",
+            }.get(pos)
+
+            if wordnet_pos is None:
+                lemma = word
+            else:
+                lemma = LEMMATIZER.lemmatize(word, wordnet_pos)
+
+            # POS tagging can be unreliable in extracted technical text.
+            # Try the likely grammatical category for common inflectional
+            # endings, accepting a change only when WordNet recognizes a lemma.
+            fallback_pos = []
+            if word.endswith(("s", "es")):
+                fallback_pos.extend(("n", "v"))
+            if word.endswith(("ing", "ed", "en")):
+                fallback_pos.append("v")
+            if word.endswith(("er", "est")):
+                fallback_pos.append("a")
+
+            if lemma == word:
+                for candidate_pos in fallback_pos:
+                    candidate = LEMMATIZER.lemmatize(word, candidate_pos)
+                    if candidate != word:
+                        lemma = candidate
+                        break
+
+            lemmas.append(lemma)
+
+        return lemmas
+    except LookupError:
+        if not LEMMATIZATION_WARNING_SHOWN:
+            print(
+                "NLTK lemmatization data is missing; words will remain "
+                "unmodified. Install it with: "
+                "python -c \"import nltk; "
+                "nltk.download('wordnet'); "
+                "nltk.download('averaged_perceptron_tagger_eng')\""
+            )
+            LEMMATIZATION_WARNING_SHOWN = True
+        return words
 
 
 # ============================================================
@@ -386,6 +424,9 @@ def build_concordance(pages):
         words = extract_words(
             text
         )
+
+        words = [normalize_word(word) for word in words]
+        words = lemmatize_words(words)
 
 
         for raw_word in words:
