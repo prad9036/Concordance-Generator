@@ -73,9 +73,11 @@ def extract_pages(pdf_file):
     for number, page in enumerate(doc, start=1):
 
         text = page.get_text("text")
+        page_label = extract_printed_page_number(page)
 
         pages.append({
             "page": number,
+            "page_label": page_label or str(number),
             "text": text
         })
 
@@ -84,9 +86,65 @@ def extract_pages(pdf_file):
                 f"  Extracted {number}/{len(doc)} pages"
             )
 
+    fill_missing_page_labels(pages)
+
     doc.close()
 
     return pages
+
+
+def extract_printed_page_number(page):
+    """Read a dotted page number or chapter opener marker from a margin."""
+    page_height = page.rect.height
+    margin_blocks = [
+        block[4]
+        for block in page.get_text("blocks")
+        if len(block) > 4
+        and (block[1] <= page_height * 0.16 or block[3] >= page_height * 0.84)
+    ]
+
+    for block_text in margin_blocks:
+        normalized = re.sub(r"\s+", " ", block_text).strip()
+        match = re.search(r"(?<!\d)(\d{1,3}\.\d{1,3})(?!\d)", normalized)
+        if match:
+            return match.group(1)
+
+    # Chapter opener pages in this PDF show "N CHAPTER" instead of N.1.
+    for block_text in margin_blocks:
+        match = re.search(r"\b(\d{1,3})\s+CHAPTER\b", block_text, re.IGNORECASE)
+        if match:
+            return f"{match.group(1)}.1"
+
+    # Fall back to an explicit PDF page label if present.
+    try:
+        label = page.get_label()
+        if label:
+            return str(label)
+    except (AttributeError, RuntimeError):
+        pass
+
+    return None
+
+
+def fill_missing_page_labels(pages):
+    """Infer omitted labels from adjacent labels within the same chapter."""
+    known = []
+    for index, item in enumerate(pages):
+        label = item.get("page_label")
+        if label and re.fullmatch(r"\d+\.\d+", str(label)):
+            major, minor = map(int, str(label).split("."))
+            known.append((index, major, minor))
+
+    for (left_index, major, minor), (right_index, right_major, right_minor) in zip(known, known[1:]):
+        distance = right_index - left_index
+        if major != right_major or right_minor - minor != distance:
+            continue
+        for offset in range(1, distance):
+            pages[left_index + offset]["page_label"] = f"{major}.{minor + offset}"
+
+    for item in pages:
+        if not item.get("page_label"):
+            item["page_label"] = str(item["page"])
 
 
 # ============================================================
@@ -279,7 +337,7 @@ def build_concordance(pages):
         start=1
     ):
 
-        page_number = item["page"]
+        page_number = item.get("page_label", item["page"])
 
 
         text = remove_repeated_lines(
@@ -348,76 +406,65 @@ def format_page_ranges(pages):
     if not pages:
         return ""
 
-
-    pages = sorted(
-        set(pages)
-    )
-
-
     ranges = []
+    numeric_pages = sorted({int(value) for value in pages if str(value).isdigit()})
+    dotted_pages = sorted({
+        (int(str(value).split(".")[0]), int(str(value).split(".")[1]))
+        for value in pages
+        if re.fullmatch(r"\d+\.\d+", str(value))
+    })
+    other_pages = sorted({
+        str(value)
+        for value in pages
+        if not str(value).isdigit() and not re.fullmatch(r"\d+\.\d+", str(value))
+    })
 
+    if numeric_pages:
+        start = previous = numeric_pages[0]
 
-    start = pages[0]
-    previous = pages[0]
+        for page in numeric_pages[1:]:
+            if page == previous + 1:
+                previous = page
+                continue
 
-
-    for page in pages[1:]:
-
-        # Consecutive page.
-
-        if page == previous + 1:
-
-            previous = page
-
-            continue
-
-
-        # Finish previous range.
+            if start == previous:
+                ranges.append(str(start))
+            elif previous == start + 1:
+                ranges.append(f"{start}, {previous}")
+            else:
+                ranges.append(f"{start}–{previous}")
+            start = previous = page
 
         if start == previous:
-
-            ranges.append(
-                str(start)
-            )
-
+            ranges.append(str(start))
         elif previous == start + 1:
-
-            ranges.append(
-                f"{start}, {previous}"
-            )
-
+            ranges.append(f"{start}, {previous}")
         else:
+            ranges.append(f"{start}–{previous}")
 
-            ranges.append(
-                f"{start}–{previous}"
-            )
+    if dotted_pages:
+        start = previous = dotted_pages[0]
+        for page in dotted_pages[1:]:
+            if page[0] == previous[0] and page[1] == previous[1] + 1:
+                previous = page
+                continue
 
+            if start == previous:
+                ranges.append(f"{start[0]}.{start[1]}")
+            elif start[0] == previous[0]:
+                ranges.append(f"{start[0]}.{start[1]}–{previous[0]}.{previous[1]}")
+            else:
+                ranges.append(f"{start[0]}.{start[1]}, {previous[0]}.{previous[1]}")
+            start = previous = page
 
-        start = page
-        previous = page
+        if start == previous:
+            ranges.append(f"{start[0]}.{start[1]}")
+        elif start[0] == previous[0]:
+            ranges.append(f"{start[0]}.{start[1]}–{previous[0]}.{previous[1]}")
+        else:
+            ranges.append(f"{start[0]}.{start[1]}, {previous[0]}.{previous[1]}")
 
-
-    # Finish final range.
-
-    if start == previous:
-
-        ranges.append(
-            str(start)
-        )
-
-    elif previous == start + 1:
-
-        ranges.append(
-            f"{start}, {previous}"
-        )
-
-    else:
-
-        ranges.append(
-            f"{start}–{previous}"
-        )
-
-
+    ranges.extend(other_pages)
     return ", ".join(ranges)
 
 
