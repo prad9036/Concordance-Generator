@@ -347,22 +347,57 @@ def ensure_nltk_data():
     print("\n[SETUP] Checking language resources")
     print(f"        Download location: {data_dir}")
     resources = (
-        ("corpora/wordnet", "wordnet"),
+        # NLTK installs WordNet as a ZIP archive, so check the archive path.
+        ("corpora/wordnet.zip", "wordnet"),
         ("taggers/averaged_perceptron_tagger_eng", "averaged_perceptron_tagger_eng"),
     )
-    for resource_path, package in resources:
+    total_resources = len(resources)
+    for index, (resource_path, package) in enumerate(resources, start=1):
+        progress = f"[NLTK {index}/{total_resources}]"
         try:
             nltk.data.find(resource_path)
-            print(f"        Ready: {package}")
+            print(f"{progress} Ready: {package}")
         except LookupError:
-            print(f"        Downloading: {package}...")
-            downloaded = nltk.download(
-                package, download_dir=data_dir_string, quiet=True
+            print(f"{progress} Downloading {package}...")
+            downloaded = download_nltk_package(
+                package, data_dir_string, progress
             )
             status = "Installed" if downloaded else "Could not download"
-            print(f"        {status}: {package}")
+            print(f"{progress} {status}: {package}")
 
     NLTK_DATA_READY = True
+
+
+def download_nltk_package(package, download_dir, progress_label):
+    """Download a package while showing its byte-transfer percentage."""
+    downloader = nltk.downloader.Downloader(download_dir=download_dir)
+    last_percent = None
+    installed = False
+
+    for message in downloader.incr_download(package, download_dir=download_dir):
+        if isinstance(message, nltk.downloader.ProgressMessage):
+            percent = max(0, min(100, int(message.progress)))
+            if percent != last_percent:
+                bar_width = 24
+                filled = round(bar_width * percent / 100)
+                bar = "#" * filled + "-" * (bar_width - filled)
+                print(
+                    f"\r{progress_label} {package}: "
+                    f"[{bar}] {percent:3d}%",
+                    end="",
+                    flush=True,
+                )
+                last_percent = percent
+        elif isinstance(message, nltk.downloader.ErrorMessage):
+            if last_percent is not None:
+                print()
+            print(f"{progress_label} Download error: {message.message}")
+        elif isinstance(message, nltk.downloader.FinishPackageMessage):
+            installed = True
+
+    if last_percent is not None:
+        print()
+    return installed
 
 
 def lemmatize_words(words):
@@ -868,7 +903,7 @@ def create_docx(
 
 def main():
 
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (2, 3):
 
         print()
         print(
@@ -877,8 +912,7 @@ def main():
 
         print(
             'python concordance.py '
-            '"book.pdf" '
-            '"concordance.docx"'
+            '"book.pdf" ["output.docx"]'
         )
 
         print()
@@ -887,8 +921,13 @@ def main():
 
 
     pdf_file = sys.argv[1]
-
-    output_file = sys.argv[2]
+    if len(sys.argv) == 3:
+        output_file = sys.argv[2]
+    else:
+        input_path = Path(pdf_file)
+        output_file = str(
+            Path.cwd() / f"concordance_{input_path.stem}.docx"
+        )
 
 
     print()
