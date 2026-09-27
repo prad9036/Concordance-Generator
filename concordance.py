@@ -1,10 +1,14 @@
-import sys
 import re
-import json
-import html
+import sys
 from collections import defaultdict, Counter
 
 import fitz  # PyMuPDF
+
+from docx import Document
+from docx.shared import Inches, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 
 # ============================================================
@@ -12,6 +16,21 @@ import fitz  # PyMuPDF
 # ============================================================
 
 MIN_WORD_LENGTH = 3
+
+FONT_NAME = "Times New Roman"
+FONT_SIZE = 9
+
+TOP_MARGIN = 0.55
+BOTTOM_MARGIN = 0.55
+LEFT_MARGIN = 0.60
+RIGHT_MARGIN = 0.60
+
+COLUMN_GAP = 0.25
+
+
+# ============================================================
+# STOP WORDS
+# ============================================================
 
 STOP_WORDS = {
     "a", "about", "above", "after", "again", "against", "all",
@@ -31,41 +50,47 @@ STOP_WORDS = {
     "through", "to", "too", "under", "until", "up", "very",
     "was", "we", "were", "what", "when", "where", "which",
     "while", "who", "whom", "why", "will", "with", "would",
-    "you", "your", "yours", "yourself", "yourselves"
+    "you", "your", "yours", "yourself", "yourselves","able"
 }
 
 
 # ============================================================
-# PDF
+# PDF TEXT EXTRACTION
 # ============================================================
 
-def extract_pages(filename):
+def extract_pages(pdf_file):
 
-    doc = fitz.open(filename)
+    doc = fitz.open(pdf_file)
 
     pages = []
 
-    print("Reading PDF...")
+    print("=" * 60)
+    print("READING PDF")
+    print("=" * 60)
 
-    for number, page in enumerate(doc, 1):
+    print(f"Total PDF pages: {len(doc)}")
+
+    for number, page in enumerate(doc, start=1):
+
+        text = page.get_text("text")
 
         pages.append({
             "page": number,
-            "text": page.get_text("text")
+            "text": text
         })
 
         if number % 25 == 0:
-            print(f"  {number} pages processed")
+            print(
+                f"  Extracted {number}/{len(doc)} pages"
+            )
 
     doc.close()
-
-    print(f"Total pages: {len(pages)}")
 
     return pages
 
 
 # ============================================================
-# HEADER / FOOTER
+# DETECT REPEATED HEADERS / FOOTERS
 # ============================================================
 
 def find_repeated_lines(pages):
@@ -76,6 +101,7 @@ def find_repeated_lines(pages):
 
         lines = item["text"].splitlines()
 
+        # Look at lines near the top and bottom.
         candidates = (
             lines[:4] +
             lines[-4:]
@@ -90,21 +116,28 @@ def find_repeated_lines(pages):
             ).strip().lower()
 
             if len(line) >= 4:
+
                 counter[line] += 1
+
+
+    # A line appearing on at least 10% of pages
+    # is probably a running header/footer.
 
     threshold = max(
         3,
         int(len(pages) * 0.10)
     )
 
-    return {
+    repeated = {
         line
         for line, count in counter.items()
         if count >= threshold
     }
 
+    return repeated
 
-def remove_headers_footers(
+
+def remove_repeated_lines(
     text,
     repeated_lines
 ):
@@ -128,12 +161,19 @@ def remove_headers_footers(
 
 
 # ============================================================
-# TEXT CLEANING
+# CLEAN PDF TEXT
 # ============================================================
 
 def clean_text(text):
 
-    # Join hyphenated words split over lines.
+    # Join words split at the end of a line.
+    #
+    # naviga-
+    # tion
+    #
+    # becomes:
+    #
+    # navigation
 
     text = re.sub(
         r"(\w)-\s*\n\s*(\w)",
@@ -141,7 +181,8 @@ def clean_text(text):
         text
     )
 
-    # Replace line breaks with spaces.
+
+    # Convert line breaks to spaces.
 
     text = re.sub(
         r"\s*\n\s*",
@@ -149,7 +190,8 @@ def clean_text(text):
         text
     )
 
-    # Collapse spaces.
+
+    # Collapse multiple spaces.
 
     text = re.sub(
         r"\s+",
@@ -157,35 +199,18 @@ def clean_text(text):
         text
     )
 
+
     return text.strip()
 
 
 # ============================================================
-# SENTENCES
-# ============================================================
-
-def split_sentences(text):
-
-    parts = re.split(
-        r"(?<=[.!?])\s+(?=[A-Z0-9\"'])",
-        text
-    )
-
-    return [
-        x.strip()
-        for x in parts
-        if x.strip()
-    ]
-
-
-# ============================================================
-# WORDS
+# EXTRACT WORDS
 # ============================================================
 
 def extract_words(text):
 
     return re.findall(
-        r"\b[A-Za-z]+(?:['’-][A-Za-z]+)*\b",
+        r"\b[A-Za-z]+(?:['’\-][A-Za-z]+)*\b",
         text
     )
 
@@ -194,970 +219,529 @@ def normalize_word(word):
 
     word = word.lower()
 
-    word = word.replace("’", "'")
+    # Normalize curly apostrophe.
+
+    word = word.replace(
+        "’",
+        "'"
+    )
+
+
+    # Remove possessive.
 
     if word.endswith("'s"):
+
         word = word[:-2]
 
-    word = word.strip("-'")
+
+    # Remove leading/trailing punctuation.
+
+    word = word.strip(
+        "-'"
+    )
+
 
     return word
 
 
 # ============================================================
-# CONCORDANCE
+# BUILD CONCORDANCE
 # ============================================================
 
 def build_concordance(pages):
 
-    repeated = find_repeated_lines(pages)
+    print()
+    print("=" * 60)
+    print("BUILDING CONCORDANCE")
+    print("=" * 60)
 
-    print(
-        f"Possible repeated headers/footers: "
-        f"{len(repeated)}"
+
+    repeated_lines = (
+        find_repeated_lines(pages)
     )
 
-    concordance = defaultdict(list)
 
-    total = 0
+    print(
+        f"Detected {len(repeated_lines)} "
+        "repeated header/footer lines."
+    )
 
-    for index, item in enumerate(pages, 1):
 
-        text = remove_headers_footers(
+    # word -> set of page numbers
+
+    concordance = defaultdict(set)
+
+    total_words = 0
+
+
+    for index, item in enumerate(
+        pages,
+        start=1
+    ):
+
+        page_number = item["page"]
+
+
+        text = remove_repeated_lines(
             item["text"],
-            repeated
+            repeated_lines
         )
 
-        text = clean_text(text)
+
+        text = clean_text(
+            text
+        )
+
 
         if not text:
             continue
 
-        sentences = split_sentences(text)
 
-        for sentence in sentences:
+        words = extract_words(
+            text
+        )
 
-            words = extract_words(sentence)
 
-            for raw_word in words:
+        for raw_word in words:
 
-                word = normalize_word(
-                    raw_word
-                )
+            word = normalize_word(
+                raw_word
+            )
 
-                if len(word) < MIN_WORD_LENGTH:
-                    continue
 
-                if word in STOP_WORDS:
-                    continue
+            if len(word) < MIN_WORD_LENGTH:
+                continue
 
-                concordance[word].append({
-                    "page": item["page"],
-                    "context": sentence
-                })
 
-                total += 1
+            if word in STOP_WORDS:
+                continue
+
+
+            concordance[word].add(
+                page_number
+            )
+
+
+            total_words += 1
+
 
         if index % 25 == 0:
+
             print(
-                f"  Indexing {index}/{len(pages)}"
+                f"  Indexed "
+                f"{index}/{len(pages)} pages"
             )
 
-    return concordance, total
+
+    return (
+        concordance,
+        total_words
+    )
 
 
 # ============================================================
-# REMOVE DUPLICATES
+# FORMAT PAGE NUMBERS
 # ============================================================
 
-def remove_duplicates(concordance):
+def format_page_ranges(pages):
 
-    for word in concordance:
+    if not pages:
+        return ""
 
-        seen = set()
-        result = []
 
-        for item in concordance[word]:
+    pages = sorted(
+        set(pages)
+    )
 
-            key = (
-                item["page"],
-                item["context"]
+
+    ranges = []
+
+
+    start = pages[0]
+    previous = pages[0]
+
+
+    for page in pages[1:]:
+
+        # Consecutive page.
+
+        if page == previous + 1:
+
+            previous = page
+
+            continue
+
+
+        # Finish previous range.
+
+        if start == previous:
+
+            ranges.append(
+                str(start)
             )
 
-            if key not in seen:
+        elif previous == start + 1:
 
-                seen.add(key)
-                result.append(item)
+            ranges.append(
+                f"{start}, {previous}"
+            )
 
-        concordance[word] = result
+        else:
+
+            ranges.append(
+                f"{start}–{previous}"
+            )
+
+
+        start = page
+        previous = page
+
+
+    # Finish final range.
+
+    if start == previous:
+
+        ranges.append(
+            str(start)
+        )
+
+    elif previous == start + 1:
+
+        ranges.append(
+            f"{start}, {previous}"
+        )
+
+    else:
+
+        ranges.append(
+            f"{start}–{previous}"
+        )
+
+
+    return ", ".join(ranges)
 
 
 # ============================================================
-# HTML TEMPLATE
+# SET WORD COLUMN LAYOUT
 # ============================================================
 
-HTML_TEMPLATE = r"""
-<!DOCTYPE html>
+def set_three_columns(section):
 
-<html>
+    sectPr = section._sectPr
 
-<head>
 
-<meta charset="UTF-8">
+    # Find existing <w:cols>
 
-<meta name="viewport"
-      content="width=device-width, initial-scale=1">
+    cols_list = sectPr.xpath(
+        "./w:cols"
+    )
 
-<title>Book Concordance</title>
 
-<style>
+    if cols_list:
 
-* {
-    box-sizing: border-box;
-}
+        cols = cols_list[0]
 
-body {
-    margin: 0;
-    background: #f5f5f5;
-    color: #222;
-    font-family:
-        -apple-system,
-        BlinkMacSystemFont,
-        "Segoe UI",
-        Arial,
-        sans-serif;
-}
+    else:
 
-header {
-    position: sticky;
-    top: 0;
-    z-index: 10;
+        cols = OxmlElement(
+            "w:cols"
+        )
 
-    background: white;
+        sectPr.append(
+            cols
+        )
 
-    border-bottom: 1px solid #ddd;
 
-    padding: 20px;
-}
+    # Three columns.
 
-.header-inner {
-    max-width: 1100px;
-    margin: auto;
-}
+    cols.set(
+        qn("w:num"),
+        "3"
+    )
 
-h1 {
-    margin: 0;
-}
 
-.filename {
-    color: #777;
-    font-size: 14px;
-    margin-top: 5px;
-}
+    # Equal width.
 
-.stats {
-    color: #777;
-    font-size: 13px;
-    margin-top: 3px;
-}
+    cols.set(
+        qn("w:equalWidth"),
+        "1"
+    )
 
-.search-row {
-    display: flex;
-    gap: 8px;
-    margin-top: 18px;
-}
 
-#search {
-    flex: 1;
+    # Space between columns.
+    #
+    # Word uses twips here.
+    # 360 twips = 0.25 inch.
 
-    padding: 13px;
-
-    font-size: 17px;
-
-    border: 1px solid #bbb;
-
-    border-radius: 8px;
-
-    outline: none;
-}
-
-#search:focus {
-    border-color: #333;
-}
-
-#clear {
-    padding: 0 18px;
-
-    border: 1px solid #bbb;
-
-    background: white;
-
-    border-radius: 8px;
-
-    cursor: pointer;
-}
-
-.info {
-    display: flex;
-
-    justify-content: space-between;
-
-    margin-top: 8px;
-
-    color: #777;
-
-    font-size: 13px;
-}
-
-.alphabet {
-    display: flex;
-
-    flex-wrap: wrap;
-
-    gap: 5px;
-
-    margin-top: 15px;
-}
-
-.letter {
-    border: 0;
-
-    background: #eee;
-
-    border-radius: 5px;
-
-    padding: 5px 9px;
-
-    cursor: pointer;
-}
-
-.letter.active {
-    background: #222;
-    color: white;
-}
-
-main {
-    max-width: 1100px;
-
-    margin: auto;
-
-    padding: 25px 20px 80px;
-}
-
-.word {
-    background: white;
-
-    margin-bottom: 12px;
-
-    padding: 18px 20px;
-
-    border-radius: 10px;
-
-    box-shadow:
-        0 1px 3px rgba(0,0,0,.08);
-}
-
-.word-name {
-    font-size: 21px;
-
-    font-weight: 600;
-}
-
-.frequency {
-    color: #777;
-
-    font-size: 13px;
-
-    margin-top: 3px;
-}
-
-.entry {
-    margin-top: 12px;
-
-    padding:
-        10px 0 10px 15px;
-
-    border-left:
-        3px solid #ddd;
-
-    line-height: 1.5;
-}
-
-.page-number {
-    font-weight: 600;
-
-    color: #555;
-
-    margin-right: 8px;
-}
-
-.context {
-    color: #444;
-}
-
-mark {
-    background: #ffe58a;
-
-    padding: 1px 2px;
-
-    border-radius: 2px;
-}
-
-#no-results {
-    display: none;
-
-    text-align: center;
-
-    background: white;
-
-    padding: 50px;
-
-    border-radius: 10px;
-
-    color: #777;
-}
-
-</style>
-
-</head>
-
-
-<body>
-
-
-<header>
-
-<div class="header-inner">
-
-<h1>Concordance</h1>
-
-<div class="filename">
-__PDF_NAME__
-</div>
-
-<div class="stats">
-__UNIQUE_WORDS__ unique words ·
-__OCCURRENCES__ occurrences
-</div>
-
-
-<div class="search-row">
-
-<input
-    id="search"
-    type="search"
-    placeholder="Search word or context..."
-    autocomplete="off"
->
-
-<button id="clear">
-Clear
-</button>
-
-</div>
-
-
-<div class="info">
-
-<span id="result-count">
-Showing all words
-</span>
-
-<span>
-Press Esc to clear
-</span>
-
-</div>
-
-
-<div class="alphabet">
-
-__ALPHABET__
-
-</div>
-
-</div>
-
-</header>
-
-
-<main>
-
-<div id="results"></div>
-
-<div id="no-results">
-
-<h2>No results found</h2>
-
-Try another search term.
-
-</div>
-
-</main>
-
-
-<script id="concordance-data"
-        type="application/json">
-
-__DATA__
-
-</script>
-
-
-<script>
-
-"use strict";
-
-
-/* ==========================================================
-   LOAD DATA
-========================================================== */
-
-const DATA_ELEMENT =
-    document.getElementById(
-        "concordance-data"
-    );
-
-const DATA =
-    JSON.parse(
-        DATA_ELEMENT.textContent
-    );
-
-
-/* ==========================================================
-   ELEMENTS
-========================================================== */
-
-const searchBox =
-    document.getElementById("search");
-
-const clearButton =
-    document.getElementById("clear");
-
-const results =
-    document.getElementById("results");
-
-const noResults =
-    document.getElementById("no-results");
-
-const resultCount =
-    document.getElementById("result-count");
-
-
-/* ==========================================================
-   STATE
-========================================================== */
-
-let selectedLetter = null;
-
-
-/* ==========================================================
-   ESCAPE HTML
-========================================================== */
-
-function escapeHTML(text) {
-
-    return String(text)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
-
-
-/* ==========================================================
-   ESCAPE REGEX
-========================================================== */
-
-function escapeRegex(text) {
-
-    return text.replace(
-        /[.*+?^${}()|[\]\\]/g,
-        "\\$&"
-    );
-}
-
-
-/* ==========================================================
-   HIGHLIGHT
-========================================================== */
-
-function highlight(text, query) {
-
-    const safeText =
-        escapeHTML(text);
-
-    if (!query) {
-        return safeText;
-    }
-
-    const regex =
-        new RegExp(
-            "(" +
-            escapeRegex(query) +
-            ")",
-            "gi"
-        );
-
-    return safeText.replace(
-        regex,
-        "<mark>$1</mark>"
-    );
-}
-
-
-/* ==========================================================
-   GET RESULTS
-========================================================== */
-
-function getResults(query) {
-
-    let result = DATA;
-
-
-    /* Alphabet filter */
-
-    if (selectedLetter) {
-
-        result = result.filter(
-            function(item) {
-
-                return (
-                    item.word
-                        .charAt(0)
-                        .toUpperCase()
-                    ===
-                    selectedLetter
-                );
-
-            }
-        );
-    }
-
-
-    /* Search */
-
-    if (query) {
-
-        const q =
-            query.toLowerCase();
-
-        result = result.filter(
-            function(item) {
-
-                /* Search word */
-
-                if (
-                    item.word
-                        .toLowerCase()
-                        .includes(q)
-                ) {
-                    return true;
-                }
-
-
-                /* Search context */
-
-                return item.occurrences.some(
-                    function(occurrence) {
-
-                        return (
-                            occurrence.context
-                                .toLowerCase()
-                                .includes(q)
-                        );
-
-                    }
-                );
-
-            }
-        );
-    }
-
-
-    return result;
-}
-
-
-/* ==========================================================
-   RENDER
-========================================================== */
-
-function render() {
-
-    const query =
-        searchBox.value.trim();
-
-    const data =
-        getResults(query);
-
-
-    results.innerHTML = "";
-
-
-    /* Result count */
-
-    if (!query && !selectedLetter) {
-
-        resultCount.textContent =
-            "Showing all " +
-            DATA.length.toLocaleString() +
-            " words";
-
-    } else {
-
-        resultCount.textContent =
-            data.length.toLocaleString() +
-            " matching words";
-    }
-
-
-    /* No results */
-
-    if (data.length === 0) {
-
-        noResults.style.display =
-            "block";
-
-        return;
-
-    }
-
-
-    noResults.style.display =
-        "none";
-
-
-    /* Create results */
-
-    let output = "";
-
-
-    data.forEach(
-        function(item) {
-
-            output +=
-                '<section class="word">';
-
-
-            output +=
-                '<div class="word-name">' +
-                highlight(
-                    item.word,
-                    query
-                ) +
-                '</div>';
-
-
-            output +=
-                '<div class="frequency">' +
-                item.count.toLocaleString() +
-                (
-                    item.count === 1
-                    ? " occurrence"
-                    : " occurrences"
-                ) +
-                '</div>';
-
-
-            item.occurrences.forEach(
-                function(occurrence) {
-
-                    output +=
-                        '<div class="entry">';
-
-                    output +=
-                        '<span class="page-number">' +
-                        'Page ' +
-                        occurrence.page +
-                        '</span>';
-
-                    output +=
-                        '<span class="context">' +
-                        highlight(
-                            occurrence.context,
-                            query
-                        ) +
-                        '</span>';
-
-                    output +=
-                        '</div>';
-                }
-            );
-
-
-            output +=
-                '</section>';
-
-        }
-    );
-
-
-    results.innerHTML =
-        output;
-}
-
-
-/* ==========================================================
-   SEARCH
-========================================================== */
-
-searchBox.addEventListener(
-    "input",
-    function() {
-
-        render();
-
-    }
-);
-
-
-/* ==========================================================
-   CLEAR
-========================================================== */
-
-clearButton.addEventListener(
-    "click",
-    function() {
-
-        searchBox.value = "";
-
-        selectedLetter = null;
-
-
-        document
-            .querySelectorAll(".letter")
-            .forEach(
-                function(button) {
-
-                    button.classList.remove(
-                        "active"
-                    );
-
-                }
-            );
-
-
-        render();
-
-        searchBox.focus();
-
-    }
-);
-
-
-/* ==========================================================
-   ESC
-========================================================== */
-
-document.addEventListener(
-    "keydown",
-    function(event) {
-
-        if (event.key === "Escape") {
-
-            searchBox.value = "";
-
-            selectedLetter = null;
-
-
-            document
-                .querySelectorAll(".letter")
-                .forEach(
-                    function(button) {
-
-                        button.classList.remove(
-                            "active"
-                        );
-
-                    }
-                );
-
-
-            render();
-
-            searchBox.focus();
-
-        }
-
-    }
-);
-
-
-/* ==========================================================
-   ALPHABET
-========================================================== */
-
-document
-    .querySelectorAll(".letter")
-    .forEach(
-        function(button) {
-
-            button.addEventListener(
-                "click",
-                function() {
-
-                    const letter =
-                        this.dataset.letter;
-
-
-                    if (
-                        selectedLetter === letter
-                    ) {
-
-                        selectedLetter =
-                            null;
-
-                        this.classList.remove(
-                            "active"
-                        );
-
-                    } else {
-
-                        selectedLetter =
-                            letter;
-
-
-                        document
-                            .querySelectorAll(
-                                ".letter"
-                            )
-                            .forEach(
-                                function(b) {
-
-                                    b.classList.remove(
-                                        "active"
-                                    );
-
-                                }
-                            );
-
-
-                        this.classList.add(
-                            "active"
-                        );
-                    }
-
-
-                    render();
-
-                }
-            );
-
-        }
-    );
-
-
-/* ==========================================================
-   INITIAL DISPLAY
-========================================================== */
-
-render();
-
-</script>
-
-
-</body>
-
-</html>
-"""
+    cols.set(
+        qn("w:space"),
+        "360"
+    )
 
 
 # ============================================================
-# CREATE HTML
+# CREATE WORD DOCUMENT
 # ============================================================
 
-def create_html(
+def create_docx(
     concordance,
     output_file,
     pdf_name
 ):
+
+    print()
+    print("=" * 60)
+    print("CREATING WORD DOCUMENT")
+    print("=" * 60)
+
+
+    doc = Document()
+
+
+    # ========================================================
+    # PAGE SETUP
+    # ========================================================
+
+    section = doc.sections[0]
+
+
+    section.top_margin = Inches(
+        TOP_MARGIN
+    )
+
+    section.bottom_margin = Inches(
+        BOTTOM_MARGIN
+    )
+
+    section.left_margin = Inches(
+        LEFT_MARGIN
+    )
+
+    section.right_margin = Inches(
+        RIGHT_MARGIN
+    )
+
+
+    # Native Word columns.
+
+    set_three_columns(
+        section
+    )
+
+
+    # ========================================================
+    # DEFAULT FONT
+    # ========================================================
+
+    normal = doc.styles["Normal"]
+
+    normal.font.name = FONT_NAME
+
+    normal.font.size = Pt(
+        FONT_SIZE
+    )
+
+    normal._element.rPr.rFonts.set(
+        qn("w:eastAsia"),
+        FONT_NAME
+    )
+
+
+    # ========================================================
+    # TITLE
+    # ========================================================
+
+    title = doc.add_paragraph()
+
+    title.alignment = (
+        WD_ALIGN_PARAGRAPH.CENTER
+    )
+
+    title.paragraph_format.space_after = Pt(2)
+
+
+    run = title.add_run(
+        "CONCORDANCE"
+    )
+
+    run.bold = True
+
+    run.font.name = FONT_NAME
+
+    run.font.size = Pt(15)
+
+
+    # Subtitle
+
+    subtitle = doc.add_paragraph()
+
+    subtitle.alignment = (
+        WD_ALIGN_PARAGRAPH.CENTER
+    )
+
+    subtitle.paragraph_format.space_after = Pt(7)
+
+
+    run = subtitle.add_run(
+        pdf_name
+    )
+
+    run.italic = True
+
+    run.font.name = FONT_NAME
+
+    run.font.size = Pt(8)
+
+
+    # ========================================================
+    # CONCORDANCE
+    # ========================================================
 
     words = sorted(
         concordance.keys()
     )
 
 
-    data = []
+    current_letter = None
+
 
     for word in words:
 
-        data.append({
-            "word": word,
-            "count": len(
-                concordance[word]
-            ),
-            "occurrences":
-                concordance[word]
-        })
-
-
-    json_data = json.dumps(
-        data,
-        ensure_ascii=False
-    )
-
-
-    # Alphabet buttons
-
-    alphabet = ""
-
-    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-
-        alphabet += (
-            '<button class="letter" '
-            'data-letter="' +
-            letter +
-            '">' +
-            letter +
-            '</button>'
+        first_letter = (
+            word[0].upper()
         )
 
 
-    occurrence_count = sum(
-        item["count"]
-        for item in data
+        # ----------------------------------------------------
+        # LETTER HEADING
+        # ----------------------------------------------------
+
+        if first_letter != current_letter:
+
+            current_letter = first_letter
+
+
+            p = doc.add_paragraph()
+
+
+            p.paragraph_format.space_before = Pt(5)
+
+            p.paragraph_format.space_after = Pt(2)
+
+            p.paragraph_format.keep_with_next = True
+
+            p.paragraph_format.keep_together = True
+
+
+            run = p.add_run(
+                current_letter
+            )
+
+            run.bold = True
+
+            run.font.name = FONT_NAME
+
+            run.font.size = Pt(11)
+
+
+        # ----------------------------------------------------
+        # WORD ENTRY
+        # ----------------------------------------------------
+
+        p = doc.add_paragraph()
+
+
+        p.paragraph_format.space_before = Pt(0)
+
+        p.paragraph_format.space_after = Pt(1)
+
+        p.paragraph_format.line_spacing = 1.0
+
+        p.paragraph_format.keep_together = True
+
+
+        # ----------------------------------------------------
+        # WORD
+        # ----------------------------------------------------
+
+        run = p.add_run(
+            word
+        )
+
+        run.bold = True
+
+        run.font.name = FONT_NAME
+
+        run.font.size = Pt(
+            FONT_SIZE
+        )
+
+
+        # ----------------------------------------------------
+        # PAGE NUMBERS
+        # ----------------------------------------------------
+
+        p.add_run(
+            "  "
+        )
+
+
+        page_numbers = (
+            format_page_ranges(
+                concordance[word]
+            )
+        )
+
+
+        run = p.add_run(
+            page_numbers
+        )
+
+        run.font.name = FONT_NAME
+
+        run.font.size = Pt(
+            FONT_SIZE
+        )
+
+
+    # ========================================================
+    # FOOTER
+    # ========================================================
+
+    footer = section.footer
+
+
+    footer_p = footer.paragraphs[0]
+
+
+    footer_p.alignment = (
+        WD_ALIGN_PARAGRAPH.CENTER
     )
 
 
-    # Replace placeholders
-
-    document = HTML_TEMPLATE
-
-    document = document.replace(
-        "__PDF_NAME__",
-        html.escape(pdf_name)
-    )
-
-    document = document.replace(
-        "__UNIQUE_WORDS__",
-        f"{len(words):,}"
-    )
-
-    document = document.replace(
-        "__OCCURRENCES__",
-        f"{occurrence_count:,}"
-    )
-
-    document = document.replace(
-        "__ALPHABET__",
-        alphabet
-    )
-
-    document = document.replace(
-        "__DATA__",
-        json_data
+    run = footer_p.add_run(
+        "Concordance"
     )
 
 
-    with open(
-        output_file,
-        "w",
-        encoding="utf-8"
-    ) as f:
+    run.font.name = FONT_NAME
 
-        f.write(document)
+    run.font.size = Pt(8)
+
+
+    # ========================================================
+    # SAVE
+    # ========================================================
+
+    doc.save(
+        output_file
+    )
+
+
+    print()
+    print(
+        f"Saved: {output_file}"
+    )
 
 
 # ============================================================
@@ -1170,9 +754,15 @@ def main():
 
         print()
         print(
-            'Usage: python concordance.py '
-            '"book.pdf" "concordance.html"'
+            "Usage:"
         )
+
+        print(
+            'python concordance.py '
+            '"book.pdf" '
+            '"concordance.docx"'
+        )
+
         print()
 
         sys.exit(1)
@@ -1184,56 +774,60 @@ def main():
 
 
     print()
-    print("=" * 50)
-    print("PDF CONCORDANCE")
-    print("=" * 50)
+    print("=" * 60)
+    print("BOOK CONCORDANCE GENERATOR")
+    print("=" * 60)
     print()
 
 
-    # Read PDF
+    # --------------------------------------------------------
+    # READ PDF
+    # --------------------------------------------------------
 
     pages = extract_pages(
         pdf_file
     )
 
 
-    # Build concordance
+    # --------------------------------------------------------
+    # BUILD INDEX
+    # --------------------------------------------------------
 
-    concordance, total = \
-        build_concordance(pages)
-
-
-    # Remove duplicate contexts
-
-    print("Removing duplicates...")
-
-    remove_duplicates(
-        concordance
+    concordance, total_words = (
+        build_concordance(
+            pages
+        )
     )
 
 
-    # Generate HTML
+    # --------------------------------------------------------
+    # CREATE WORD FILE
+    # --------------------------------------------------------
 
-    print("Creating HTML...")
-
-    create_html(
+    create_docx(
         concordance,
         output_file,
         pdf_file
     )
 
 
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
+
     print()
+    print("=" * 60)
     print("DONE")
-    print()
+    print("=" * 60)
+
     print(
-        f"Unique words: "
+        f"Unique indexed words: "
         f"{len(concordance):,}"
     )
 
     print(
-        f"Indexed occurrences: "
-        f"{total:,}"
+        f"Word occurrences processed: "
+        f"{total_words:,}"
     )
 
     print(
@@ -1242,6 +836,10 @@ def main():
 
     print()
 
+
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
     main()
