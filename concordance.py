@@ -69,7 +69,7 @@ def extract_pages(pdf_file):
 
         pages.append({
             "page": number,
-            "page_label": page_label or str(number),
+            "page_label": page_label,
             "text": text
         })
 
@@ -86,23 +86,36 @@ def extract_pages(pdf_file):
 
 
 def extract_printed_page_number(page):
-    """Read a dotted page number or chapter opener marker from a margin."""
+    """Read a page number only when it is isolated in a page margin."""
     page_height = page.rect.height
-    margin_blocks = [
-        block[4]
-        for block in page.get_text("blocks")
-        if len(block) > 4
-        and (block[1] <= page_height * 0.16 or block[3] >= page_height * 0.84)
-    ]
+    margin_blocks = []
+    for block in page.get_text("blocks"):
+        if len(block) <= 4:
+            continue
+        x0, y0, x1, y1, block_text = block[:5]
+        if y0 <= page_height * 0.16 or y1 >= page_height * 0.84:
+            margin_blocks.append((x0, y0, x1, y1, block_text.strip()))
 
-    for block_text in margin_blocks:
-        normalized = re.sub(r"\s+", " ", block_text).strip()
-        match = re.search(r"(?<!\d)(\d{1,3}\.\d{1,3})(?!\d)", normalized)
-        if match:
-            return match.group(1)
+    # Page numbers are isolated text blocks. Requiring a full block match
+    # avoids interpreting DOI fragments, dates, and table values as folios.
+    for x0, y0, x1, y1, block_text in margin_blocks:
+        at_outer_edge = y0 <= page_height * 0.08 or y1 >= page_height * 0.92
+        if at_outer_edge and y1 - y0 <= 24 and re.fullmatch(
+            r"\d{1,4}(?:\.\d{1,3})?", block_text
+        ):
+            return block_text
+
+    # Dotted running headers may share a line with the section title. Only
+    # inspect the top margin and reject URLs or lines with other numeric data.
+    for x0, y0, x1, y1, block_text in margin_blocks:
+        if y0 > page_height * 0.16 or re.search(r"https?://|doi", block_text, re.IGNORECASE):
+            continue
+        matches = re.findall(r"(?<![\d.])(\d{1,3}\.\d{1,3})(?![\d.])", block_text)
+        if len(matches) == 1:
+            return matches[0]
 
     # Chapter opener pages in this PDF show "N CHAPTER" instead of N.1.
-    for block_text in margin_blocks:
+    for x0, y0, x1, y1, block_text in margin_blocks:
         match = re.search(r"\b(\d{1,3})\s+CHAPTER\b", block_text, re.IGNORECASE)
         if match:
             return f"{match.group(1)}.1"
@@ -119,20 +132,43 @@ def extract_printed_page_number(page):
 
 
 def fill_missing_page_labels(pages):
-    """Infer omitted labels from adjacent labels within the same chapter."""
+    """Infer omitted labels from adjacent sequential labels when possible."""
     known = []
     for index, item in enumerate(pages):
         label = item.get("page_label")
-        if label and re.fullmatch(r"\d+\.\d+", str(label)):
-            major, minor = map(int, str(label).split("."))
-            known.append((index, major, minor))
+        if label and re.fullmatch(r"\d+(?:\.\d+)?", str(label)):
+            parts = tuple(map(int, str(label).split(".")))
+            known.append((index, parts))
 
-    for (left_index, major, minor), (right_index, right_major, right_minor) in zip(known, known[1:]):
+    for (left_index, left_parts), (right_index, right_parts) in zip(known, known[1:]):
         distance = right_index - left_index
-        if major != right_major or right_minor - minor != distance:
-            continue
-        for offset in range(1, distance):
-            pages[left_index + offset]["page_label"] = f"{major}.{minor + offset}"
+        if len(left_parts) == len(right_parts) == 1:
+            if right_parts[0] - left_parts[0] != distance:
+                continue
+            for offset in range(1, distance):
+                pages[left_index + offset]["page_label"] = str(left_parts[0] + offset)
+        elif len(left_parts) == len(right_parts) == 2:
+            major, minor = left_parts
+            right_major, right_minor = right_parts
+            if major != right_major or right_minor - minor != distance:
+                continue
+            for offset in range(1, distance):
+                pages[left_index + offset]["page_label"] = f"{major}.{minor + offset}"
+
+    # If the first visible folio follows an unnumbered first page, infer the
+    # preceding sequence when that produces a positive page number.
+    first_known = next(
+        ((index, parts) for index, parts in known if not pages[index].get("page_label") is None),
+        None,
+    )
+    if first_known:
+        index, parts = first_known
+        if len(parts) == 1 and parts[0] > index:
+            for offset in range(index):
+                pages[offset]["page_label"] = str(parts[0] - (index - offset))
+        elif len(parts) == 2 and parts[1] > index:
+            for offset in range(index):
+                pages[offset]["page_label"] = f"{parts[0]}.{parts[1] - (index - offset)}"
 
     for item in pages:
         if not item.get("page_label"):
