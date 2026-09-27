@@ -3,7 +3,7 @@ import sys
 from collections import defaultdict, Counter
 from pathlib import Path
 
-import fitz  # PyMuPDF
+import pymupdf
 import nltk
 from nltk.stem import WordNetLemmatizer
 
