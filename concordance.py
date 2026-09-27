@@ -25,6 +25,7 @@ FONT_SIZE = 9
 
 LEMMATIZER = WordNetLemmatizer()
 LEMMATIZATION_WARNING_SHOWN = False
+NLTK_DATA_READY = False
 
 TOP_MARGIN = 0.55
 BOTTOM_MARGIN = 0.55
@@ -56,9 +57,7 @@ def extract_pages(pdf_file):
 
     pages = []
 
-    print("=" * 60)
-    print("READING PDF")
-    print("=" * 60)
+    print("\n[1/3] Reading PDF")
 
     print(f"Total PDF pages: {len(doc)}")
 
@@ -333,6 +332,39 @@ def normalize_word(word):
     return word
 
 
+def ensure_nltk_data():
+    """Make the required NLTK datasets available and report setup progress."""
+    global NLTK_DATA_READY
+    if NLTK_DATA_READY:
+        return
+
+    data_dir = Path.cwd() / "nltk_data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    data_dir_string = str(data_dir)
+    if data_dir_string not in nltk.data.path:
+        nltk.data.path.insert(0, data_dir_string)
+
+    print("\n[SETUP] Checking language resources")
+    print(f"        Download location: {data_dir}")
+    resources = (
+        ("corpora/wordnet", "wordnet"),
+        ("taggers/averaged_perceptron_tagger_eng", "averaged_perceptron_tagger_eng"),
+    )
+    for resource_path, package in resources:
+        try:
+            nltk.data.find(resource_path)
+            print(f"        Ready: {package}")
+        except LookupError:
+            print(f"        Downloading: {package}...")
+            downloaded = nltk.download(
+                package, download_dir=data_dir_string, quiet=True
+            )
+            status = "Installed" if downloaded else "Could not download"
+            print(f"        {status}: {package}")
+
+    NLTK_DATA_READY = True
+
+
 def lemmatize_words(words):
     """Lemmatize known English inflections; leave unknown words untouched."""
     global LEMMATIZATION_WARNING_SHOWN
@@ -340,6 +372,7 @@ def lemmatize_words(words):
     words = [normalize_word(word) for word in words]
 
     try:
+        ensure_nltk_data()
         tagged_words = nltk.pos_tag(words)
         lemmas = []
 
@@ -398,9 +431,7 @@ def lemmatize_words(words):
 def build_concordance(pages):
 
     print()
-    print("=" * 60)
-    print("BUILDING CONCORDANCE")
-    print("=" * 60)
+    print("\n[2/3] Building concordance")
 
 
     repeated_lines = (
@@ -579,9 +610,7 @@ def create_docx(
 ):
 
     print()
-    print("=" * 60)
-    print("CREATING WORD DOCUMENT")
-    print("=" * 60)
+    print("\n[3/3] Creating Word document")
 
 
     doc = Document()
@@ -863,10 +892,13 @@ def main():
 
 
     print()
-    print("=" * 60)
-    print("BOOK CONCORDANCE GENERATOR")
-    print("=" * 60)
-    print()
+    print("\n" + "=" * 56)
+    print("  BOOK CONCORDANCE GENERATOR")
+    print("=" * 56)
+    print(f"  Source: {pdf_file}")
+    print(f"  Output: {output_file}")
+
+    ensure_nltk_data()
 
 
     # --------------------------------------------------------
