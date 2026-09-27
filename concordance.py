@@ -1,6 +1,7 @@
 import re
 import sys
 from collections import defaultdict, Counter
+from pathlib import Path
 
 import fitz  # PyMuPDF
 import nltk
@@ -33,30 +34,16 @@ RIGHT_MARGIN = 0.60
 COLUMN_GAP = 0.25
 
 
-# ============================================================
-# STOP WORDS
-# ============================================================
+def load_stop_words():
+    stop_word_file = Path(__file__).with_name("stop_word_list.txt")
+    return {
+        line.split("#", 1)[0].strip().lower()
+        for line in stop_word_file.read_text(encoding="utf-8").splitlines()
+        if line.split("#", 1)[0].strip()
+    }
 
-STOP_WORDS = {
-    "a", "about", "above", "after", "again", "against", "all",
-    "am", "an", "and", "any", "are", "as", "at", "be",
-    "because", "been", "before", "being", "below", "between",
-    "both", "but", "by", "can", "could", "did", "do", "does",
-    "doing", "down", "during", "each", "few", "for", "from",
-    "further", "had", "has", "have", "having", "he", "her",
-    "here", "hers", "herself", "him", "himself", "his", "how",
-    "i", "if", "in", "into", "is", "it", "its", "itself",
-    "just", "me", "more", "most", "my", "myself", "no", "nor",
-    "not", "now", "of", "off", "on", "once", "only", "or",
-    "other", "our", "ours", "ourselves", "out", "over", "own",
-    "same", "she", "should", "so", "some", "such", "than",
-    "that", "the", "their", "theirs", "them", "themselves",
-    "then", "there", "these", "they", "this", "those",
-    "through", "to", "too", "under", "until", "up", "very",
-    "was", "we", "were", "what", "when", "where", "which",
-    "while", "who", "whom", "why", "will", "with", "would",
-    "you", "your", "yours", "yourself", "yourselves","able"
-}
+
+STOP_WORDS = load_stop_words()
 
 
 # ============================================================
