@@ -1,8 +1,10 @@
 import re
 import sys
+import shutil
+import zipfile
 from collections import defaultdict, Counter
 from pathlib import Path
-
+import fitz
 import pymupdf
 import nltk
 from nltk.stem import WordNetLemmatizer
@@ -26,6 +28,7 @@ FONT_SIZE = 9
 LEMMATIZER = WordNetLemmatizer()
 LEMMATIZATION_WARNING_SHOWN = False
 NLTK_DATA_READY = False
+NLTK_DATA_AVAILABLE = False
 
 TOP_MARGIN = 0.55
 BOTTOM_MARGIN = 0.55
@@ -334,9 +337,9 @@ def normalize_word(word):
 
 def ensure_nltk_data():
     """Make the required NLTK datasets available and report setup progress."""
-    global NLTK_DATA_READY
+    global NLTK_DATA_READY, NLTK_DATA_AVAILABLE
     if NLTK_DATA_READY:
-        return
+        return NLTK_DATA_AVAILABLE
 
     data_dir = Path.cwd() / "nltk_data"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -347,25 +350,94 @@ def ensure_nltk_data():
     print("\n[SETUP] Checking language resources")
     print(f"        Download location: {data_dir}")
     resources = (
-        # NLTK installs WordNet as a ZIP archive, so check the archive path.
-        ("corpora/wordnet.zip", "wordnet"),
-        ("taggers/averaged_perceptron_tagger_eng", "averaged_perceptron_tagger_eng"),
+        {
+            "name": "wordnet",
+            "package": "wordnet",
+            "paths": ("corpora/wordnet", "corpora/wordnet.zip"),
+            "files": (data_dir / "corpora" / "wordnet.zip",),
+            "directories": (data_dir / "corpora" / "wordnet",),
+        },
+        {
+            "name": "averaged_perceptron_tagger_eng",
+            "package": "averaged_perceptron_tagger_eng",
+            "paths": (
+                "taggers/averaged_perceptron_tagger_eng",
+                "taggers/averaged_perceptron_tagger_eng.zip",
+            ),
+            "files": (data_dir / "taggers" / "averaged_perceptron_tagger_eng.zip",),
+            "directories": (
+                data_dir / "taggers" / "averaged_perceptron_tagger_eng",
+            ),
+        },
     )
     total_resources = len(resources)
-    for index, (resource_path, package) in enumerate(resources, start=1):
+    all_ready = True
+    for index, resource in enumerate(resources, start=1):
         progress = f"[NLTK {index}/{total_resources}]"
+        if nltk_resource_is_valid(resource, data_dir_string):
+            print(f"{progress} Ready: {resource['name']}")
+            continue
+
+        # A previous interrupted download can leave zero-byte or invalid ZIP
+        # files. Remove only this resource's local files before retrying.
+        remove_nltk_resource_files(resource)
+        print(f"{progress} Downloading {resource['package']}...")
+        downloaded = False
         try:
-            nltk.data.find(resource_path)
-            print(f"{progress} Ready: {package}")
-        except LookupError:
-            print(f"{progress} Downloading {package}...")
             downloaded = download_nltk_package(
-                package, data_dir_string, progress
+                resource["package"], data_dir_string, progress
             )
-            status = "Installed" if downloaded else "Could not download"
-            print(f"{progress} {status}: {package}")
+        except Exception as error:
+            print(f"{progress} Download failed: {error}")
+
+        valid_after_download = downloaded and nltk_resource_is_valid(
+            resource, data_dir_string
+        )
+        if valid_after_download:
+            print(f"{progress} Installed: {resource['name']}")
+        else:
+            remove_nltk_resource_files(resource)
+            print(f"{progress} Unavailable: {resource['name']}")
+            all_ready = False
 
     NLTK_DATA_READY = True
+    NLTK_DATA_AVAILABLE = all_ready
+    return all_ready
+
+
+def nltk_resource_is_valid(resource, data_dir):
+    """Check that a resource exists locally and can actually be loaded."""
+    try:
+        found = False
+        for resource_path in resource["paths"]:
+            try:
+                nltk.data.find(resource_path, paths=[data_dir])
+                found = True
+                break
+            except LookupError:
+                continue
+        if not found:
+            return False
+
+        if resource["name"] == "wordnet":
+            from nltk.corpus import wordnet
+            wordnet.ensure_loaded()
+            return wordnet.morphy("calculations", wordnet.NOUN) == "calculation"
+
+        nltk.tag.PerceptronTagger(lang="eng")
+        return True
+    except (LookupError, OSError, ValueError, zipfile.BadZipFile):
+        return False
+
+
+def remove_nltk_resource_files(resource):
+    """Remove corrupt or partial files for one managed NLTK package."""
+    for file_path in resource["files"]:
+        if file_path.exists():
+            file_path.unlink()
+    for directory in resource["directories"]:
+        if directory.exists():
+            shutil.rmtree(directory)
 
 
 def download_nltk_package(package, download_dir, progress_label):
@@ -407,7 +479,12 @@ def lemmatize_words(words):
     words = [normalize_word(word) for word in words]
 
     try:
-        ensure_nltk_data()
+        if not ensure_nltk_data():
+            if not LEMMATIZATION_WARNING_SHOWN:
+                print("NLTK resources are unavailable; words will remain unmodified.")
+                LEMMATIZATION_WARNING_SHOWN = True
+            return words
+
         tagged_words = nltk.pos_tag(words)
         lemmas = []
 
@@ -446,14 +523,11 @@ def lemmatize_words(words):
             lemmas.append(lemma)
 
         return lemmas
-    except LookupError:
+    except (LookupError, OSError, zipfile.BadZipFile) as error:
         if not LEMMATIZATION_WARNING_SHOWN:
             print(
-                "NLTK lemmatization data is missing; words will remain "
-                "unmodified. Install it with: "
-                "python -c \"import nltk; "
-                "nltk.download('wordnet'); "
-                "nltk.download('averaged_perceptron_tagger_eng')\""
+                "NLTK lemmatization data is unavailable; words will remain "
+                f"unmodified. Details: {error}"
             )
             LEMMATIZATION_WARNING_SHOWN = True
         return words
