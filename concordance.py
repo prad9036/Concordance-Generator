@@ -98,6 +98,22 @@ def extract_printed_page_number(page):
         if y0 <= page_height * 0.16 or y1 >= page_height * 0.84:
             margin_blocks.append((x0, y0, x1, y1, block_text.strip()))
 
+    # This manual's footer encloses folios in tildes. A chapter-page marker
+    # such as "~ 25-80 ~" means chapter 25, page 80; the date and version
+    # string elsewhere in the same footer are deliberately ignored.
+    for x0, y0, x1, y1, block_text in margin_blocks:
+        chapter_page = re.search(
+            r"~\s*(\d{1,3})\s*[-–—]\s*(\d{1,3})\s*~",
+            block_text,
+        )
+        if chapter_page:
+            chapter, page_number = map(int, chapter_page.groups())
+            return f"{chapter}.{page_number}"
+
+        folio = re.search(r"~\s*(\d{1,4})\s*~", block_text)
+        if folio:
+            return str(int(folio.group(1)))
+
     # Page numbers are isolated text blocks. Requiring a full block match
     # avoids interpreting DOI fragments, dates, and table values as folios.
     for x0, y0, x1, y1, block_text in margin_blocks:
