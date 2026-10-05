@@ -2,6 +2,7 @@ import re
 import shutil
 import zipfile
 import argparse
+import sys
 from collections import defaultdict, Counter
 from pathlib import Path
 import fitz
@@ -39,6 +40,23 @@ RIGHT_MARGIN = 0.60
 COLUMN_GAP = 0.25
 
 
+def update_page_progress(stage, current, total, previous_percent):
+    """Update page progress in place, printing only when the percent changes."""
+    if total <= 0:
+        return previous_percent
+
+    percent = current * 100 // total
+    if percent != previous_percent:
+        print(
+            f"\r  {stage}: {percent:3d}% ({current}/{total} pages)",
+            end="",
+            flush=True,
+        )
+    if current >= total:
+        print()
+    return percent
+
+
 def load_stop_words():
     stop_word_file = Path(__file__).with_name("stop_word_list.txt")
     return {
@@ -64,6 +82,7 @@ def extract_pages(pdf_file):
     print("\n[1/3] Reading PDF")
 
     print(f"Total PDF pages: {len(doc)}")
+    last_percent = -1
 
     for number, page in enumerate(doc, start=1):
 
@@ -76,10 +95,9 @@ def extract_pages(pdf_file):
             "text": text
         })
 
-        if number % 25 == 0:
-            print(
-                f"  Extracted {number}/{len(doc)} pages"
-            )
+        last_percent = update_page_progress(
+            "Reading pages", number, len(doc), last_percent
+        )
 
     fill_missing_page_labels(pages)
 
@@ -745,7 +763,12 @@ def build_concordance(pages, max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
     total_words = 0
 
 
+    last_percent = -1
     for index, item in enumerate(content_pages, start=1):
+
+        last_percent = update_page_progress(
+            "Indexing pages", index, len(content_pages), last_percent
+        )
 
         page_number = item.get("page_label")
         if not page_number:
@@ -797,14 +820,6 @@ def build_concordance(pages, max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
 
 
             total_words += 1
-
-
-        if index % 25 == 0:
-
-            print(
-                f"  Indexed "
-                f"{index}/{len(content_pages)} pages"
-            )
 
 
     return (
