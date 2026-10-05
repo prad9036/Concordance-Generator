@@ -40,21 +40,25 @@ RIGHT_MARGIN = 0.60
 COLUMN_GAP = 0.25
 
 
-def update_page_progress(stage, current, total, previous_percent):
-    """Update page progress in place, printing only when the percent changes."""
+def update_progress(stage, current, total, unit, previous_percent):
+    """Update a progress line in place, printing only when the percent changes."""
     if total <= 0:
         return previous_percent
 
     percent = current * 100 // total
     if percent != previous_percent:
         print(
-            f"\r  {stage}: {percent:3d}% ({current}/{total} pages)",
+            f"\r  {stage}: {percent:3d}% ({current}/{total} {unit})",
             end="",
             flush=True,
         )
     if current >= total:
         print()
     return percent
+
+
+def update_page_progress(stage, current, total, previous_percent):
+    return update_progress(stage, current, total, "pages", previous_percent)
 
 
 def load_stop_words():
@@ -66,7 +70,9 @@ def load_stop_words():
     }
 
 
-STOP_WORDS = load_stop_words()
+CUSTOM_STOP_WORDS = load_stop_words()
+NLTK_STOP_WORDS = set()
+STOP_WORDS = set(CUSTOM_STOP_WORDS)
 
 
 # ============================================================
@@ -533,6 +539,7 @@ def ensure_nltk_data():
 
     try:
         nltk_stop_words = nltk.corpus.stopwords.words("english")
+        NLTK_STOP_WORDS.update(word.lower() for word in nltk_stop_words)
         STOP_WORDS.update(word.lower() for word in nltk_stop_words)
         print(f"[NLTK] Loaded {len(nltk_stop_words)} English stop words.")
     except (LookupError, OSError, zipfile.BadZipFile) as error:
@@ -810,7 +817,9 @@ def build_concordance(pages, max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
                 continue
 
 
-            if " " not in word and word in STOP_WORDS:
+            if word in CUSTOM_STOP_WORDS or (
+                " " not in word and word in NLTK_STOP_WORDS
+            ):
                 continue
 
 
@@ -1029,9 +1038,14 @@ def create_docx(
 
 
     current_letter = None
+    last_percent = -1
 
 
-    for word in words:
+    for index, word in enumerate(words, start=1):
+
+        last_percent = update_progress(
+            "Writing entries", index, len(words), "terms", last_percent
+        )
 
         first_letter = (
             word[0].upper()
@@ -1159,9 +1173,11 @@ def create_docx(
     # SAVE
     # ========================================================
 
+    print("  Saving DOCX file...", flush=True)
     doc.save(
         output_file
     )
+    print("  DOCX save complete.", flush=True)
 
 
     print()
