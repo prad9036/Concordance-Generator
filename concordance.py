@@ -1,7 +1,7 @@
 import re
-import sys
 import shutil
 import zipfile
+import argparse
 from collections import defaultdict, Counter
 from pathlib import Path
 import fitz
@@ -21,7 +21,7 @@ from docx.oxml.ns import qn
 # ============================================================
 
 MIN_WORD_LENGTH = 3
-MAX_PHRASE_WORDS = 5
+DEFAULT_MAX_PHRASE_WORDS = 1
 
 FONT_NAME = "Times New Roman"
 FONT_SIZE = 9
@@ -562,9 +562,12 @@ def lemmatize_words(words):
         return words
 
 
-def extract_phrases(words):
+def extract_phrases(words, max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
     """Extract adjective/noun phrases, including short prepositional terms."""
     phrase_words = set()
+    if max_phrase_words < 2:
+        return phrase_words
+
     connectors = {
         "about", "at", "by", "for", "from", "in", "of", "on",
         "through", "to", "under", "with", "without",
@@ -582,7 +585,7 @@ def extract_phrases(words):
             continue
 
         phrase = []
-        for end in range(start, min(len(tagged_words), start + MAX_PHRASE_WORDS)):
+        for end in range(start, min(len(tagged_words), start + max_phrase_words)):
             word, tag = tagged_words[end]
             is_content = tag.startswith(content_tags)
             is_connector = tag == "IN" and word in connectors
@@ -605,7 +608,7 @@ def extract_phrases(words):
 # BUILD CONCORDANCE
 # ============================================================
 
-def build_concordance(pages):
+def build_concordance(pages, max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
 
     print()
     print("\n[2/3] Building concordance")
@@ -665,7 +668,7 @@ def build_concordance(pages):
 
         words = [normalize_word(word) for word in words]
         words = lemmatize_words(words)
-        terms = words + sorted(extract_phrases(words))
+        terms = words + sorted(extract_phrases(words, max_phrase_words))
 
 
         for raw_word in terms:
@@ -1052,27 +1055,26 @@ def create_docx(
 # ============================================================
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Generate a word and phrase concordance from a PDF."
+    )
+    parser.add_argument("pdf_file", help="Source PDF")
+    parser.add_argument("output_file", nargs="?", help="Output DOCX path")
+    parser.add_argument(
+        "--phrase",
+        type=int,
+        default=DEFAULT_MAX_PHRASE_WORDS,
+        metavar="N",
+        help="Index phrases up to N words long (default: 1, single words only)",
+    )
+    args = parser.parse_args()
 
-    if len(sys.argv) not in (2, 3):
+    if args.phrase < 1:
+        parser.error("--phrase must be at least 1")
 
-        print()
-        print(
-            "Usage:"
-        )
-
-        print(
-            'python concordance.py '
-            '"book.pdf" ["output.docx"]'
-        )
-
-        print()
-
-        sys.exit(1)
-
-
-    pdf_file = sys.argv[1]
-    if len(sys.argv) == 3:
-        output_file = sys.argv[2]
+    pdf_file = args.pdf_file
+    if args.output_file:
+        output_file = args.output_file
     else:
         input_path = Path(pdf_file)
         output_file = str(
@@ -1086,6 +1088,7 @@ def main():
     print("=" * 56)
     print(f"  Source: {pdf_file}")
     print(f"  Output: {output_file}")
+    print(f"  Maximum phrase length: {args.phrase}")
 
     ensure_nltk_data()
 
@@ -1105,7 +1108,8 @@ def main():
 
     concordance, total_words = (
         build_concordance(
-            pages
+            pages,
+            max_phrase_words=args.phrase,
         )
     )
 
