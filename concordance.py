@@ -472,6 +472,13 @@ def ensure_nltk_data():
                 data_dir / "taggers" / "averaged_perceptron_tagger_eng",
             ),
         },
+        {
+            "name": "stopwords",
+            "package": "stopwords",
+            "paths": ("corpora/stopwords", "corpora/stopwords.zip"),
+            "files": (data_dir / "corpora" / "stopwords.zip",),
+            "directories": (data_dir / "corpora" / "stopwords",),
+        },
     )
     total_resources = len(resources)
     all_ready = True
@@ -501,7 +508,20 @@ def ensure_nltk_data():
         else:
             remove_nltk_resource_files(resource)
             print(f"{progress} Unavailable: {resource['name']}")
-            all_ready = False
+            # Stop words are optional: the user's local list remains active
+            # even if the NLTK corpus cannot be downloaded.
+            if resource["name"] != "stopwords":
+                all_ready = False
+
+    try:
+        nltk_stop_words = nltk.corpus.stopwords.words("english")
+        STOP_WORDS.update(word.lower() for word in nltk_stop_words)
+        print(f"[NLTK] Loaded {len(nltk_stop_words)} English stop words.")
+    except (LookupError, OSError, zipfile.BadZipFile) as error:
+        print(
+            "[NLTK] English stop words unavailable; using stop_word_list.txt. "
+            f"Details: {error}"
+        )
 
     NLTK_DATA_READY = True
     NLTK_DATA_AVAILABLE = all_ready
@@ -526,6 +546,9 @@ def nltk_resource_is_valid(resource, data_dir):
             from nltk.corpus import wordnet
             wordnet.ensure_loaded()
             return wordnet.morphy("calculations", wordnet.NOUN) == "calculation"
+
+        if resource["name"] == "stopwords":
+            return bool(nltk.corpus.stopwords.words("english"))
 
         nltk.tag.PerceptronTagger(lang="eng")
         return True
@@ -655,14 +678,14 @@ def extract_phrases(words, max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
 
     for start in range(len(tagged_words)):
         first_word, first_tag = tagged_words[start]
-        if not first_tag.startswith(content_tags) or first_word in STOP_WORDS:
+        if not first_tag.startswith(content_tags) and first_word not in STOP_WORDS:
             continue
 
         phrase = []
         for end in range(start, min(len(tagged_words), start + max_phrase_words)):
             word, tag = tagged_words[end]
             is_content = tag.startswith(content_tags)
-            is_connector = tag == "IN" and word in connectors
+            is_connector = (tag == "IN" and word in connectors) or word in STOP_WORDS
             if not (is_content or is_connector):
                 break
             phrase.append(word)
@@ -671,7 +694,6 @@ def extract_phrases(words, max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
             if (
                 len(phrase) >= 2
                 and tag.startswith("NN")
-                and phrase[-1] not in STOP_WORDS
             ):
                 phrase_words.add(" ".join(phrase))
 
@@ -765,7 +787,7 @@ def build_concordance(pages, max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
                 continue
 
 
-            if word in STOP_WORDS:
+            if " " not in word and word in STOP_WORDS:
                 continue
 
 
