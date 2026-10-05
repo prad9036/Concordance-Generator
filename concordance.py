@@ -91,13 +91,59 @@ def extract_pages(pdf_file):
 def extract_printed_page_number(page):
     """Read a page number only when it is isolated in a page margin."""
     page_height = page.rect.height
+    page_text = page.get_text("text")
+    footer_folio = extract_vobl_footer_folio(page_text)
+    if footer_folio:
+        return footer_folio
+
+    all_blocks = page.get_text("blocks")
     margin_blocks = []
-    for block in page.get_text("blocks"):
+    for block in all_blocks:
         if len(block) <= 4:
             continue
         x0, y0, x1, y1, block_text = block[:5]
         if y0 <= page_height * 0.16 or y1 >= page_height * 0.84:
             margin_blocks.append((x0, y0, x1, y1, block_text.strip()))
+
+    # Some PDFs expose the date, centered folio, and document code as three
+    # separate PyMuPDF blocks. Reassemble the footer in visual order and parse
+    # it as one row before trying generic margin-number detection.
+    footer_blocks = [
+        (block[0], block[1], block[2], block[3], block[4].strip())
+        for block in all_blocks
+        if len(block) > 4 and block[3] >= page_height * 0.75
+    ]
+    footer_text = " ".join(
+        block[4]
+        for block in sorted(footer_blocks, key=lambda block: (round(block[1] / 8), block[0]))
+    )
+    footer_folio = extract_vobl_footer_folio(footer_text)
+    if footer_folio:
+        return footer_folio
+    has_dated_vobl_footer = (
+        re.search(r"\b\d{1,2}\s+[A-Z]+\s+\d{4}\b", footer_text, re.IGNORECASE)
+        and re.search(r"VOBL/ATM/\d{4}/VER\b", footer_text, re.IGNORECASE)
+    )
+    if has_dated_vobl_footer:
+        ordered_footer_blocks = sorted(
+            footer_blocks,
+            key=lambda block: (round(block[1] / 8), block[0]),
+        )
+        for block in ordered_footer_blocks:
+            block_text = block[4].strip()
+            chapter_page = re.fullmatch(
+                r"~?\s*(\d{1,3})\s*[-–—]\s*(\d{1,3})\s*~?",
+                block_text,
+            )
+            if chapter_page:
+                chapter, page_number = map(int, chapter_page.groups())
+                return f"{chapter}.{page_number}"
+        for block in ordered_footer_blocks:
+            block_text = block[4].strip()
+            folio = re.fullmatch(r"~?\s*(\d{1,3}(?:\.\d{1,3})?)\s*~?", block_text)
+            if folio:
+                value = folio.group(1)
+                return str(int(value)) if value.isdigit() else value
 
     # This manual's footer encloses folios in tildes. A chapter-page marker
     # such as "~ 25-80 ~" means chapter 25, page 80; the date and version
@@ -139,14 +185,29 @@ def extract_printed_page_number(page):
         if match:
             return f"{match.group(1)}.1"
 
-    # Fall back to an explicit PDF page label if present.
-    try:
-        label = page.get_label()
-        if label:
-            return str(label)
-    except (AttributeError, RuntimeError):
-        pass
+    # Leave the label unset if no printed folio was found. Physical PDF page
+    # numbers must never be presented as printed page references.
+    return None
 
+
+def extract_vobl_footer_folio(text):
+    """Parse folios between the date and version code in MATS footers."""
+    footer_pattern = re.compile(
+        r"\b\d{1,2}\s+[A-Z]+\s+\d{4}\s+~?\s*"
+        r"(\d{1,3})(?:\s*[-–—]\s*(\d{1,3}))?\s*~?\s+"
+        r"VOBL/ATM/\d{4}/VER\b",
+        re.IGNORECASE,
+    )
+    # PyMuPDF can put each footer element on a separate text line even when
+    # they share one visual footer row. Search the complete page text so line
+    # breaks and variable spacing between date, folio, and version do not make
+    # us fall back to the physical PDF page index.
+    match = footer_pattern.search(text)
+    if match:
+        first, second = match.groups()
+        if second is not None:
+            return f"{int(first)}.{int(second)}"
+        return str(int(first))
     return None
 
 
@@ -189,13 +250,26 @@ def fill_missing_page_labels(pages):
             for offset in range(index):
                 pages[offset]["page_label"] = f"{parts[0]}.{parts[1] - (index - offset)}"
 
-    for item in pages:
-        if not item.get("page_label"):
-            item["page_label"] = str(item["page"])
+    # Keep unresolved folios empty. Falling back to item["page"] silently
+    # publishes physical PDF positions as if they were printed page numbers.
 
 
 def find_content_start_index(pages):
     """Skip front matter before the document switches to chapter.page folios."""
+    for index, item in enumerate(pages):
+        has_mats_footer = bool(
+            re.search(
+                r"\b\d{1,2}\s+[A-Z]+\s+\d{4}.*VOBL/ATM/\d{4}/VER\b",
+                item["text"],
+                re.IGNORECASE | re.DOTALL,
+            )
+        )
+        is_chapter_folio = bool(
+            re.fullmatch(r"\d+\.\d+", str(item.get("page_label", "")))
+        )
+        if has_mats_footer and is_chapter_folio:
+            return index
+
     for index, item in enumerate(pages):
         if re.search(r"~\s*\d{1,3}\s*[-–—]\s*\d{1,3}\s*~", item["text"]):
             return index
@@ -624,6 +698,13 @@ def build_concordance(pages, max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
             f"chapter pagination starts at {first_label}."
         )
 
+    unlabeled_pages = sum(not item.get("page_label") for item in content_pages)
+    if unlabeled_pages:
+        print(
+            f"Warning: {unlabeled_pages} content pages have no readable or "
+            "inferable printed folio; they will not be assigned physical PDF numbers."
+        )
+
     repeated_lines = (
         find_repeated_lines(content_pages)
     )
@@ -644,7 +725,9 @@ def build_concordance(pages, max_phrase_words=DEFAULT_MAX_PHRASE_WORDS):
 
     for index, item in enumerate(content_pages, start=1):
 
-        page_number = item.get("page_label", item["page"])
+        page_number = item.get("page_label")
+        if not page_number:
+            continue
 
 
         text = remove_repeated_lines(
