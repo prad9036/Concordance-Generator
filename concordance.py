@@ -21,6 +21,7 @@ from docx.oxml.ns import qn
 # ============================================================
 
 MIN_WORD_LENGTH = 3
+MAX_PHRASE_WORDS = 5
 
 FONT_NAME = "Times New Roman"
 FONT_SIZE = 9
@@ -561,6 +562,45 @@ def lemmatize_words(words):
         return words
 
 
+def extract_phrases(words):
+    """Extract adjective/noun phrases, including short prepositional terms."""
+    phrase_words = set()
+    connectors = {
+        "about", "at", "by", "for", "from", "in", "of", "on",
+        "through", "to", "under", "with", "without",
+    }
+    content_tags = ("JJ", "NN", "VBG", "VBN")
+
+    try:
+        tagged_words = nltk.pos_tag(words)
+    except (LookupError, OSError, zipfile.BadZipFile):
+        return phrase_words
+
+    for start in range(len(tagged_words)):
+        first_word, first_tag = tagged_words[start]
+        if not first_tag.startswith(content_tags) or first_word in STOP_WORDS:
+            continue
+
+        phrase = []
+        for end in range(start, min(len(tagged_words), start + MAX_PHRASE_WORDS)):
+            word, tag = tagged_words[end]
+            is_content = tag.startswith(content_tags)
+            is_connector = tag == "IN" and word in connectors
+            if not (is_content or is_connector):
+                break
+            phrase.append(word)
+
+            # A term should end in a noun and contain at least two words.
+            if (
+                len(phrase) >= 2
+                and tag.startswith("NN")
+                and phrase[-1] not in STOP_WORDS
+            ):
+                phrase_words.add(" ".join(phrase))
+
+    return phrase_words
+
+
 # ============================================================
 # BUILD CONCORDANCE
 # ============================================================
@@ -625,9 +665,10 @@ def build_concordance(pages):
 
         words = [normalize_word(word) for word in words]
         words = lemmatize_words(words)
+        terms = words + sorted(extract_phrases(words))
 
 
-        for raw_word in words:
+        for raw_word in terms:
 
             word = normalize_word(
                 raw_word
