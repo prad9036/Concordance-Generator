@@ -193,6 +193,18 @@ def fill_missing_page_labels(pages):
             item["page_label"] = str(item["page"])
 
 
+def find_content_start_index(pages):
+    """Skip front matter before the document switches to chapter.page folios."""
+    for index, item in enumerate(pages):
+        if re.search(r"~\s*\d{1,3}\s*[-–—]\s*\d{1,3}\s*~", item["text"]):
+            return index
+
+    for index, item in enumerate(pages):
+        if re.fullmatch(r"\d+\.\d+", str(item.get("page_label", ""))):
+            return index
+    return 0
+
+
 # ============================================================
 # DETECT REPEATED HEADERS / FOOTERS
 # ============================================================
@@ -559,8 +571,18 @@ def build_concordance(pages):
     print("\n[2/3] Building concordance")
 
 
+    content_start_index = find_content_start_index(pages)
+    content_pages = pages[content_start_index:]
+
+    if content_start_index:
+        first_label = content_pages[0]["page_label"]
+        print(
+            f"Skipping {content_start_index} front-matter pages; "
+            f"chapter pagination starts at {first_label}."
+        )
+
     repeated_lines = (
-        find_repeated_lines(pages)
+        find_repeated_lines(content_pages)
     )
 
 
@@ -577,10 +599,7 @@ def build_concordance(pages):
     total_words = 0
 
 
-    for index, item in enumerate(
-        pages,
-        start=1
-    ):
+    for index, item in enumerate(content_pages, start=1):
 
         page_number = item.get("page_label", item["page"])
 
@@ -635,7 +654,7 @@ def build_concordance(pages):
 
             print(
                 f"  Indexed "
-                f"{index}/{len(pages)} pages"
+                f"{index}/{len(content_pages)} pages"
             )
 
 
