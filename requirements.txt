@@ -1,3 +1,5 @@
 pymupdf 
 nltk
 python-docx
+requests
+pymongo
