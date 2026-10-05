@@ -59,6 +59,22 @@ Open the resulting `.docx` in Microsoft Word, LibreOffice Writer, or another com
 
 `stop_word_list.txt` contains one word per line. Words on this list are omitted from the concordance. Lines beginning with `#` are comments, and text after `#` on a line is ignored. Edit the file to tune the index for a particular book; the list is loaded from the same directory as `concordance.py`.
 
+### Review concordance terms
+
+Run the interactive reviewer after generating a concordance:
+
+```bash
+python review_stop_words.py
+```
+
+With no path, it reads the newest `concordance_*.docx` in the current directory. You can pass a specific DOCX and change the sample size:
+
+```bash
+python review_stop_words.py "concordance_manual.docx" --sample-size 10
+```
+
+The reviewer processes the concordance in batches of 10 by default and continues with new terms until all have been reviewed or you quit. Use `--sample-size` to change the batch size. It sends each batch of term strings to the same Perplexity query function used by `aiReview.py`. Keep `ppCookies.txt` in the current working directory for AI review; if AI is unavailable, the tool switches to individual review. Accepting the AI decisions adds its stop-word suggestions to `stop_word_list.txt`. You can instead classify each sampled term as a stop word, normal term, or unchanged. Use `--no-ai` to review batches locally without contacting AI.
+
 The script also omits words shorter than three letters, lowercases entries, removes possessive endings, normalizes some spelling variants, and lemmatizes common inflections. Page labels are inferred from page margins where possible; if no suitable printed label is found, the PDF's page number is used.
 
 ## Output format
