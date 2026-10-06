@@ -4,3 +4,4 @@ __pycache__
 *.pyc
 nltk_data/
 ppCookies.txt
+aireview/ppCookies.txt
